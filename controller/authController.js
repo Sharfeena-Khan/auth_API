@@ -1,7 +1,8 @@
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const validator = require("validator"); // For validating email and phone
+
+const jwtValidation = require('../middleware/JWTvalidation')
 
 const randomstring = require("randomstring");
 const otpGenerator = () => {
@@ -84,6 +85,7 @@ exports.verifyOTP = async (req, res) => {
   try {
 
     
+    console.log("*******************    VERIFY OTP HERE           ************************");
     
     let { userId, otp } = req.query;
     console.log('*********', req.query);
@@ -111,7 +113,7 @@ exports.verifyOTP = async (req, res) => {
     // Log to verify userInfo structure
     console.log("User Info:", userInfo);
     
-    const validOTP = await OTP.findOne({
+    const existingOtp = await OTP.findOne({
       $or: [
         { email: userInfo.email },  // Matches email if available
         { phone: userInfo.phone }   // Matches phone if available
@@ -121,12 +123,20 @@ exports.verifyOTP = async (req, res) => {
     
    
 
-    console.log("/*/*/*/*/*/*/*/*/**/*/", validOTP);
+    console.log("/*/*/*/*/*/*/*/*/**/*/", existingOtp);
+
+    const currentTime = new Date();
+    if (existingOtp.expiresAt < currentTime) {
+      return res.status(400).json({ message: "OTP expired" });
+    }
     
-    if (!validOTP) {
+    if (!existingOtp || existingOtp.expiresAt < currentTime ) {
       return res.status(400).json({ message: "Invalid OTP or OTP expired" });
     }
-     const savedPassword = validOTP.password
+     const savedPassword = existingOtp.password
+
+     console.log("*******************     NEW USER HERE           ************************");
+    
 
     const newUser = new User({
       ...userInfo, // Add either email or phone based on the input
@@ -143,7 +153,9 @@ exports.verifyOTP = async (req, res) => {
 
 exports.resend_OTP = async (req, res) => {
   try {
-    const { userId } = req.query;
+    let { userId } = req.query;
+
+    userId = String(userId).trim();
 
     const userInfo = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(userId)
                     ? {email : userId}
@@ -151,11 +163,16 @@ exports.resend_OTP = async (req, res) => {
                     ?{phone : userId}
                     :null
 
-     const otp = otpGenerator();
+    const otp = otpGenerator();
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 1);
 
     const updatedOtp = await OTP.findOneAndUpdate(
       userInfo,
-      {otp : otp },
+      {otp: otp,
+        expiresAt: expiresAt,
+
+      },
       {upsert : true, new: true}
     )
 
@@ -165,5 +182,47 @@ exports.resend_OTP = async (req, res) => {
     console.log("Your OTP is ", otp);
 
     res.status(200).json({ success: true, message: "OTP sent successfully" });
+    console.log("*******************     RESEND ENDS HERE           ************************");
+    
   } catch (error) {}
 };
+
+exports.signIn = async(req, res) => {
+  try {
+    let {userId, password} = req.body
+
+    userId = String(userId).trim();
+
+    const userInfo = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(userId)
+                    ? {email : userId}
+                    : /^[0-9]{10}$/.test(userId)
+                    ?{phone : userId}
+                    :null
+
+    const user = await User.findOne({
+      userInfo 
+    })
+
+
+   if(!user) { 
+    return res.status(401).json({ error: 'Authentication failed' });
+    }
+    
+    const passwordMatch = await bcrypt.compare(password, user.password);
+
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Authentication failed' });
+      }
+
+    const token = jwt.sign({email:user.email}, 'secret')
+    res.status(200).json({ token });
+    
+
+
+    
+    
+  } catch (error) {
+    res.status(500).json({ error: 'Internal server error' });
+    
+  }
+}
